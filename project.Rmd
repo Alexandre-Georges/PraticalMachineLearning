@@ -1,0 +1,149 @@
+---
+title: "Practical Machine Learning"
+author: "Alexandre Georges"
+date: "June 18, 2015"
+output: html_document
+---
+
+# Synopsis
+
+The purpose of this assignement is to predict the class of observations coming from a test set with the help of a training set. This set is big: it contains 19 622 observations of 160 variables. Machine learning algorithms are accurate but need a fair amount of time to "train" themselves, so the goal of this exercise will be, in fine, to optimize the learning time without loosing too much accuracy.
+
+# Data processing
+
+## Reproducibility
+
+We have to specify a seed value to make results reproducible.
+
+```{r, message = FALSE, warning = FALSE}
+set.seed(123)
+library(caret)
+library(RCurl)
+library(rpart)
+library(randomForest)
+```
+
+## Loading
+
+```{r, cache = TRUE}
+if (!exists('trainingFullSet')) {
+  trainingFile <- 'pml-training.csv'
+  download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', destfile = trainingFile, method = "curl")
+  trainingFullSet <- read.csv(trainingFile)
+}
+if (!exists('testingFullSet')) {
+  testingFile <- 'pml-testing.csv'
+  download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', destfile = testingFile, method = "curl")
+  testingFullSet <- read.csv(testingFile)
+}
+```
+
+## Variable filtering
+
+Then we want to trim variables and get rid of the useless ones. Some of them are obviously not pertinent for our analysis like: usernames, timestamps and window variables and we will remove them now.
+
+```{r}
+columnsToDrop <- c('X', 'user_name', 'raw_timestamp_part_1', 'raw_timestamp_part_2', 'cvtd_timestamp', 'new_window', 'num_window', 'problem_id')
+trainingSubset <- trainingFullSet[, !(names(trainingFullSet) %in% columnsToDrop)]
+testingSubset <- testingFullSet[, !(names(testingFullSet) %in% columnsToDrop)]
+```
+
+Some columns have a lot of NAs or empty values which tend to make them irrelevant, we are going to remove them.
+
+```{r}
+specialValuesCounts <- data.frame(
+  columnNames = names(trainingSubset),
+  numberOfNAs = as.numeric(colSums(is.na(trainingSubset))),
+  numberOfEmptys = as.numeric(colSums(trainingSubset == '')))
+
+columnsToDrop <- specialValuesCounts[specialValuesCounts$numberOfNAs > 10000, ]$columnNames
+trainingSubset <- trainingSubset[, !(names(trainingSubset) %in% columnsToDrop)]
+testingSubset <- testingSubset[, !(names(testingSubset) %in% columnsToDrop)]
+
+columnsToDrop <- specialValuesCounts[!is.na(specialValuesCounts$numberOfEmptys) & specialValuesCounts$numberOfEmptys > 10000, ]$columnNames
+trainingSubset <- trainingSubset[, !(names(trainingSubset) %in% columnsToDrop)]
+testingSubset <- testingSubset[, !(names(testingSubset) %in% columnsToDrop)]
+```
+
+## Assessment of variables
+
+We will now check the variability of the columns.
+```{r}
+  nearZeroVar(trainingSubset, saveMetrics = TRUE)
+```
+
+All variables in the training and testing set are now relevant for our analysis. 
+
+# Algorithms
+
+## Training set
+
+We will now test the different algorithms against a small portion of our testing set. To find our model, we will split the testing set in 2: one to train our model and the 2nd one to check the results. The testing set is grouped by classe, so we need to shuffle it, before splitting it.
+
+```{r}
+trainingSubset <- trainingSubset[sample.int(nrow(trainingSubset)), ]
+classes <- trainingSubset$classe
+trainingSubset <- trainingSubset[, !(names(trainingSubset) %in% 'classe')]
+
+offsetStart1 <- 1
+offsetEnd1 <- ceiling(nrow(trainingSubset) / 200)
+offsetStart2 <- offsetEnd1 + 1
+offsetEnd2 <- nrow(trainingSubset)
+
+trainingSubset1 <- trainingSubset[offsetStart1:offsetEnd1, ]
+classes1 <- classes[offsetStart1:offsetEnd1]
+trainingSubset2 <- trainingSubset[offsetStart2:offsetEnd2, ]
+classes2 <- classes[offsetStart2:offsetEnd2]
+```
+
+## Logistic regression
+We are trying to determine a non numerical value (classe), logistic regression is not suitable for our problem. A tree model would be more suitable.
+
+## RPart with cross validation
+```{r}
+train <- train(classes1 ~ ., method = 'rpart', data = trainingSubset1)
+predict <- predict(train, trainingSubset2)
+confusionMatrix(predict, classes2)
+```
+
+RPart results are disapointing especially for the classes C and D.
+
+## Random forest with cross validation
+```{r}
+train <- train(classes1 ~ ., method = 'rf', data = trainingSubset1)
+predict <- predict(train, trainingSubset2)
+confusionMatrix(predict, classes2)
+```
+
+Random forest does a good job even on a small number of observations. We will use this algorithm for the next part.
+
+# Tweaking and cross validation
+
+Now that we have determined the best algorithm, we are going to tweak it to improve its accuracy. We will use a bigger training set. After some trial and error, the best parameters I have found are the followings.
+
+```{r}
+offsetStart1 <- 1
+offsetEnd1 <- ceiling(nrow(trainingSubset) / 1.5)
+offsetStart2 <- offsetEnd1 + 1
+offsetEnd2 <- nrow(trainingSubset)
+
+trainingSubset1 <- trainingSubset[offsetStart1:offsetEnd1, ]
+classes1 <- classes[offsetStart1:offsetEnd1]
+trainingSubset2 <- trainingSubset[offsetStart2:offsetEnd2, ]
+classes2 <- classes[offsetStart2:offsetEnd2]
+
+train <- train(classes1 ~ ., trControl = trainControl(method = 'cv', number = 4), method = 'rf', data = trainingSubset1, ntree = 40, proximity = TRUE)
+predict <- predict(train, trainingSubset2)
+confusionMatrix(predict, classes2)
+```
+
+The identification rate is pretty good with those settings as we can see just above (greater than 99%).
+
+# Testing set
+
+Let's apply our model to the test set.
+```{r}
+  predict(train, testingSubset)
+```
+
+After submitting those results, it turns out they are all correct so this model is definitely pretty good :) .
